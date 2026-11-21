@@ -236,6 +236,27 @@ export function run(input) {
     do {
       quoted = text.charCodeAt(pos) === 34;
       if (quoted) {
+        // Inline the common quoted field: opens and closes on this line, no
+        // doubled quote, no CR inside, and a clean ending (comma, line break
+        // or end). Anything else falls back to readQuoted().
+        const q = text.indexOf('"', pos + 1);
+        ensureCR();
+        if (
+          q !== -1 && q <= le && text.charCodeAt(q + 1) !== 34 &&
+          (nextCR === -1 || nextCR >= q)
+        ) {
+          const nc = q + 1 >= n ? -1 : text.charCodeAt(q + 1);
+          if (nc === 44 || nc === 10 || nc === -1 || (nc === 13 && text.charCodeAt(q + 2) === 10)) {
+            fv = text.slice(pos + 1, q);
+            if (nc === 44) { pos = q + 2; fe = COMMA; }
+            else if (nc === 10) { pos = q + 2; line += 1; fe = BREAK; }
+            else if (nc === -1) { pos = n; fe = END; }
+            else { pos = q + 3; line += 1; fe = BREAK; }
+            fields.push(fv);
+            if (fe !== COMMA) break;
+            continue;
+          }
+        }
         const lb = line;
         readQuoted();
         if (line !== lb) refreshLine();
