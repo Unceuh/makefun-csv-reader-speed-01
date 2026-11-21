@@ -38,6 +38,19 @@ export function run(input) {
     if (nextCR === -2 || (nextCR !== -1 && nextCR < pos)) nextCR = text.indexOf('\r', pos);
   }
 
+  // Current line's end: le is the index of its LF (or n), ce its content end
+  // (le minus 1 when the line ends CRLF). Recomputed at each record start and
+  // whenever a quoted field carries the record across a line break.
+  let le = 0;
+  let ce = 0;
+
+  function refreshLine() {
+    le = text.indexOf('\n', pos);
+    if (le === -1) le = n;
+    ce = le;
+    if (le < n && le > pos && text.charCodeAt(le - 1) === 13) ce = le - 1;
+  }
+
   // A raw quoted segment: CRLF and a lone CR each become one LF; every line break counts into `line`.
   function cleanSeg(s) {
     if (s.indexOf('\r') !== -1) s = s.replace(/\r\n?/g, '\n');
@@ -200,10 +213,7 @@ export function run(input) {
     recordRow = header && columns === null ? null : rows.length;
 
     // Fast path: a whole line with no quote and no CR is one plain record.
-    let le = text.indexOf('\n', pos);
-    if (le === -1) le = n;
-    let ce = le;
-    if (le < n && le > pos && text.charCodeAt(le - 1) === 13) ce = le - 1;
+    refreshLine();
     const q = text.indexOf('"', pos);
     const r = text.indexOf('\r', pos);
     if ((q === -1 || q >= ce) && (r === -1 || r >= ce)) {
@@ -225,34 +235,41 @@ export function run(input) {
     let quoted = false;
     do {
       quoted = text.charCodeAt(pos) === 34;
-      if (quoted) readQuoted();
+      if (quoted) {
+        const lb = line;
+        readQuoted();
+        if (line !== lb) refreshLine();
+      }
       else {
+        // Unquoted field on the current line: one indexOf(',') finds it, bounded
+        // by the line's content end ce (a comma past ce belongs to a later line).
+        // A lone CR inside the content is dropped (stray_cr) and the field goes on.
         fv = '';
         fa = 0;
         unq: for (;;) {
-          let c = text.indexOf(',', pos);
-          let l = text.indexOf('\n', pos);
-          if (c === -1) c = n;
-          if (l === -1) l = n;
-          const end = c < l ? c : l;
-          if (nextCR === -2 || (nextCR !== -1 && nextCR < pos)) nextCR = text.indexOf('\r', pos);
-          if (nextCR !== -1 && nextCR < end) {
+          const c = text.indexOf(',', pos);
+          ensureCR();
+          if (nextCR !== -1 && nextCR < ce && (c === -1 || nextCR < c)) {
             const d = nextCR;
-            if (text.charCodeAt(d + 1) === 10) {
-              if (d > pos) { fv += text.slice(pos, d); fa += d - pos; }
-              pos = d + 2; line += 1; fe = BREAK; break unq;
-            }
             errors.push({ code: 'stray_cr', line: recordLine, row: recordRow });
             if (d > pos) { fv += text.slice(pos, d); fa += d - pos; }
-            pos = d + 1; nextCR = -2; continue unq;
+            pos = d + 1;
+            nextCR = -2;
+            continue unq;
           }
-          if (end >= n) {
-            if (pos < n) { fv += text.slice(pos); fa += n - pos; pos = n; }
-            fe = END; break unq;
+          if (c !== -1 && c < ce) {
+            if (c > pos) { fv += text.slice(pos, c); fa += c - pos; }
+            pos = c + 1;
+            fe = COMMA;
+            break unq;
           }
-          if (end > pos) { fv += text.slice(pos, end); fa += end - pos; }
-          if (end === c) { pos = end + 1; fe = COMMA; break unq; }
-          pos = end + 1; line += 1; fe = BREAK; break unq;
+          // The field runs to the line end (content end ce, CRLF's CR excluded).
+          if (ce > pos) { fv += text.slice(pos, ce); fa += ce - pos; }
+          if (le >= n) { pos = n; fe = END; break unq; }
+          pos = le + 1;
+          line += 1;
+          fe = BREAK;
+          break unq;
         }
       }
       fields.push(fv);
